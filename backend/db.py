@@ -23,6 +23,34 @@ CREATE TABLE IF NOT EXISTS probe_readings (
     processed_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS idx_probe_readings_status ON probe_readings (status, id);
+
+CREATE TABLE IF NOT EXISTS alert_rule (
+    id smallint PRIMARY KEY,
+    enabled boolean NOT NULL DEFAULT false,
+    updated_by text,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT alert_rule_singleton CHECK (id = 1)
+);
+INSERT INTO alert_rule (id, enabled) VALUES (1, false) ON CONFLICT (id) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS alert_hits (
+    id serial PRIMARY KEY,
+    reading_id integer NOT NULL UNIQUE REFERENCES probe_readings(id),
+    probe_id text NOT NULL,
+    temp_c double precision NOT NULL,
+    matched_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_hits_reading ON alert_hits (reading_id);
+
+CREATE TABLE IF NOT EXISTS alert_push_logs (
+    id serial PRIMARY KEY,
+    hit_id integer NOT NULL REFERENCES alert_hits(id),
+    reading_id integer NOT NULL REFERENCES probe_readings(id),
+    channel text NOT NULL DEFAULT '订阅铃',
+    status text NOT NULL DEFAULT 'pushed',
+    pushed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_push_logs_hit ON alert_push_logs (hit_id);
 """
 
 

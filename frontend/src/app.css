@@ -134,3 +134,70 @@ td {
   font-size: 0.875rem;
   color: #475569;
 }
+
+.nav {
+  margin-top: 0.35rem;
+  display: flex;
+  gap: 0.75rem;
+}
+
+.navlink {
+  font-size: 0.9rem;
+  color: #64748b;
+  text-decoration: none;
+  padding: 0.2rem 0.1rem;
+  border-bottom: 2px solid transparent;
+}
+
+.navlink.active {
+  color: #0369a1;
+  font-weight: 600;
+  border-bottom-color: #0369a1;
+}
+
+.count {
+  color: #64748b;
+  font-weight: 400;
+  font-size: 0.95rem;
+}
+
+.ruleline {
+  display: flex;
+  gap: 1rem;
+  align-items: center;
+}
+
+.rulestate {
+  font-size: 1rem;
+  font-weight: 600;
+}
+
+.switch {
+  flex: none;
+  width: 52px;
+  height: 28px;
+  border-radius: 999px;
+  background: #cbd5e1;
+  position: relative;
+  padding: 0;
+  transition: background 0.15s ease;
+}
+
+.switch.on {
+  background: #b91c1c;
+}
+
+.switch .knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.15s ease;
+}
+
+.switch.on .knob {
+  left: 27px;
+}
