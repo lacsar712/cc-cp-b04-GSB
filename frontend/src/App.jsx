@@ -17,6 +17,15 @@ function displayVerdict(row) {
   return "—";
 }
 
+function fmt(iso) {
+  if (!iso) return "—";
+  const d = new Date(iso);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(
+    d.getHours()
+  )}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+}
+
 export function App() {
   const [token, setToken] = useState(() => localStorage.getItem(TOKEN_KEY));
   const [user, setUser] = useState(() => {
@@ -26,6 +35,7 @@ export function App() {
       return null;
     }
   });
+  const [view, setView] = useState("desk"); // desk | bell
   const [loginForm, setLoginForm] = useState({ username: "logger", password: "log123456" });
   const [submitForm, setSubmitForm] = useState({ probe_id: "", temp_c: "" });
   const [rows, setRows] = useState([]);
@@ -50,11 +60,11 @@ export function App() {
   }, [token, authHeaders]);
 
   useEffect(() => {
+    if (view !== "desk" || !token) return undefined;
     loadReadings();
-    if (!token) return undefined;
     const t = setInterval(loadReadings, 3000);
     return () => clearInterval(t);
-  }, [loadReadings, token]);
+  }, [loadReadings, token, view]);
 
   async function onLogin(e) {
     e.preventDefault();
@@ -89,6 +99,7 @@ export function App() {
     setToken(null);
     setUser(null);
     setRows([]);
+    setView("desk");
   }
 
   async function onSubmit(e) {
@@ -166,9 +177,19 @@ export function App() {
       <div class="topbar">
         <div>
           <h1>冷链探头超温台</h1>
-          <p class="sub">温度不超过 8℃ 为合格，否则为超温。</p>
+          <p class="sub" style={{ marginBottom: 0 }}>
+            温度不超过 8℃ 为合格，否则为超温。
+          </p>
         </div>
         <div class="user">
+          <button
+            type="button"
+            class={view === "bell" ? "bell active" : "bell"}
+            onClick={() => setView(view === "bell" ? "desk" : "bell")}
+            title="异常超温订阅铃"
+          >
+            🔔 订阅铃
+          </button>
           {user?.username}（{isWriter ? "记录员" : "值班员"}）
           <button type="button" class="secondary" style={{ marginLeft: "0.5rem" }} onClick={logout}>
             退出
@@ -176,6 +197,31 @@ export function App() {
         </div>
       </div>
 
+      {view === "bell" ? (
+        <BellPage
+          authHeaders={authHeaders}
+          isWriter={isWriter}
+          onAuthError={logout}
+        />
+      ) : (
+        <DeskView
+          rows={rows}
+          isWriter={isWriter}
+          loading={loading}
+          error={error}
+          msg={msg}
+          submitForm={submitForm}
+          setSubmitForm={setSubmitForm}
+          onSubmit={onSubmit}
+        />
+      )}
+    </div>
+  );
+}
+
+function DeskView({ rows, isWriter, loading, error, msg, submitForm, setSubmitForm, onSubmit }) {
+  return (
+    <>
       {isWriter && (
         <div class="card">
           <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>提交读数</h2>
@@ -252,6 +298,212 @@ export function App() {
           </tbody>
         </table>
       </div>
-    </div>
+    </>
+  );
+}
+
+function BellPage({ authHeaders, isWriter, onAuthError }) {
+  const [setting, setSetting] = useState(null);
+  const [hits, setHits] = useState([]);
+  const [logs, setLogs] = useState([]);
+  const [recon, setRecon] = useState(null);
+  const [err, setErr] = useState("");
+  const [switching, setSwitching] = useState(false);
+
+  const load = useCallback(async () => {
+    const opts = { headers: authHeaders() };
+    const [s, h, l, r] = await Promise.all([
+      fetch("/api/subscription", opts),
+      fetch("/api/alert-hits", opts),
+      fetch("/api/push-logs", opts),
+      fetch("/api/subscription/reconcile", opts),
+    ]);
+    if ([s, h, l, r].some((x) => x.status === 401)) {
+      onAuthError();
+      return;
+    }
+    if (!s.ok || !h.ok || !l.ok || !r.ok) {
+      setErr("加载订阅铃数据失败");
+      return;
+    }
+    setErr("");
+    setSetting(await s.json());
+    setHits(await h.json());
+    setLogs(await l.json());
+    setRecon(await r.json());
+  }, [authHeaders, onAuthError]);
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 3000);
+    return () => clearInterval(t);
+  }, [load]);
+
+  async function toggleRule(next) {
+    if (!isWriter || switching) return;
+    setErr("");
+    setSwitching(true);
+    try {
+      const res = await fetch("/api/subscription", {
+        method: "PUT",
+        headers: authHeaders(),
+        body: JSON.stringify({ enabled: next }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (res.status === 403) {
+        setErr(data.detail || "值班员只读，不能修改规则");
+        return;
+      }
+      if (!res.ok) {
+        setErr(data.detail || "切换规则失败");
+        return;
+      }
+      await load();
+    } finally {
+      setSwitching(false);
+    }
+  }
+
+  const enabled = setting?.enabled ?? false;
+
+  return (
+    <>
+      <div class="card">
+        <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>订阅规则</h2>
+        <div class="rule-row">
+          <label class="switch">
+            <input
+              type="checkbox"
+              checked={enabled}
+              disabled={!isWriter || switching}
+              onChange={(e) => toggleRule(e.target.checked)}
+            />
+            <span class="slider" />
+          </label>
+          <div>
+            <strong>{enabled ? "规则已开启" : "规则已关闭"}</strong>
+            <p class="sub" style={{ margin: "0.25rem 0 0" }}>
+              开启后，服务端会把每一笔新办结的超温单写入命中列表并记一条推送流水；
+              关闭后立刻停止新命中，已有命中与流水保留。
+            </p>
+            {!isWriter && (
+              <p class="err" style={{ marginBottom: 0 }}>
+                当前为值班员（只读）：可查看命中与流水，不能修改规则开关。
+              </p>
+            )}
+            {setting?.updated_by && (
+              <p class="sub" style={{ margin: "0.25rem 0 0", fontSize: "0.8rem" }}>
+                最近由 {setting.updated_by} 于 {fmt(setting.updated_at)} 更新
+              </p>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>服务端对账</h2>
+        {recon ? (
+          <div class={recon.consistent ? "recon ok-box" : "recon bad-box"}>
+            {recon.consistent
+              ? `对账一致：办结超温 ${recon.done_overtemp_count} 笔 · 命中 ${recon.hit_count} 行 · 推送流水 ${recon.push_count} 条（命中与流水一一对应）`
+              : `对账异常：命中 ${recon.hit_count} 行但流水 ${recon.push_count} 条，有 ${recon.hits_without_push_count} 行命中缺流水`}
+          </div>
+        ) : (
+          <p class="sub" style={{ margin: 0 }}>对账中…</p>
+        )}
+      </div>
+
+      <div class="card">
+        <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>
+          命中列表 <span class="count">{hits.length}</span>
+        </h2>
+        <p class="sub" style={{ marginTop: 0, fontSize: "0.8rem" }}>
+          由服务端在超温单办结时直接写入，页面只展示 /api/alert-hits 返回结果。
+        </p>
+        <table>
+          <thead>
+            <tr>
+              <th>命中#</th>
+              <th>读数#</th>
+              <th>探头</th>
+              <th>温度℃</th>
+              <th>结论</th>
+              <th>命中时间</th>
+              <th>推送</th>
+            </tr>
+          </thead>
+          <tbody>
+            {hits.map((h) => (
+              <tr key={h.id}>
+                <td>{h.id}</td>
+                <td>{h.reading_id}</td>
+                <td>{h.probe_id}</td>
+                <td>{h.temp_c}</td>
+                <td>
+                  <span class="tag fail">{h.verdict}</span>
+                </td>
+                <td>{fmt(h.hit_at)}</td>
+                <td>
+                  {h.push ? (
+                    <span class="tag pass">
+                      {h.push.channel}·{h.push.result}
+                    </span>
+                  ) : (
+                    <span class="tag wait">缺流水</span>
+                  )}
+                </td>
+              </tr>
+            ))}
+            {hits.length === 0 && (
+              <tr>
+                <td colspan="7">暂无命中（规则关闭期间办结的超温单不会进入此列表）</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      <div class="card">
+        <h2 style={{ marginTop: 0, fontSize: "1.1rem" }}>
+          推送流水 <span class="count">{logs.length}</span>
+        </h2>
+        <table>
+          <thead>
+            <tr>
+              <th>流水#</th>
+              <th>命中#</th>
+              <th>读数#</th>
+              <th>探头</th>
+              <th>温度℃</th>
+              <th>渠道</th>
+              <th>结果</th>
+              <th>推送时间</th>
+            </tr>
+          </thead>
+          <tbody>
+            {logs.map((p) => (
+              <tr key={p.id}>
+                <td>{p.id}</td>
+                <td>{p.hit_id}</td>
+                <td>{p.reading_id}</td>
+                <td>{p.probe_id}</td>
+                <td>{p.temp_c}</td>
+                <td>{p.channel}</td>
+                <td>
+                  <span class="tag pass">{p.result}</span>
+                </td>
+                <td>{fmt(p.pushed_at)}</td>
+              </tr>
+            ))}
+            {logs.length === 0 && (
+              <tr>
+                <td colspan="8">暂无推送流水</td>
+              </tr>
+            )}
+          </tbody>
+        </table>
+        {err && <p class="err">{err}</p>}
+      </div>
+    </>
   );
 }

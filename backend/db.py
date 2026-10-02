@@ -23,6 +23,43 @@ CREATE TABLE IF NOT EXISTS probe_readings (
     processed_at timestamptz
 );
 CREATE INDEX IF NOT EXISTS idx_probe_readings_status ON probe_readings (status, id);
+
+-- 订阅铃规则开关：单行表，id 固定为 1
+CREATE TABLE IF NOT EXISTS subscription_settings (
+    id integer PRIMARY KEY DEFAULT 1,
+    enabled boolean NOT NULL DEFAULT false,
+    updated_by text,
+    updated_at timestamptz NOT NULL DEFAULT now(),
+    CONSTRAINT subscription_settings_singleton CHECK (id = 1)
+);
+
+-- 命中列表：服务端在“超温读数办结且规则开启”时写入，禁止前端私筛
+CREATE TABLE IF NOT EXISTS alert_hits (
+    id serial PRIMARY KEY,
+    reading_id integer NOT NULL UNIQUE REFERENCES probe_readings (id),
+    probe_id text NOT NULL,
+    temp_c double precision NOT NULL,
+    verdict text NOT NULL,
+    hit_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_alert_hits_hit_at ON alert_hits (hit_at DESC);
+
+-- 推送流水：与命中一一对应（hit_id 唯一），必须与命中同事务原子写入
+CREATE TABLE IF NOT EXISTS push_logs (
+    id serial PRIMARY KEY,
+    hit_id integer NOT NULL UNIQUE REFERENCES alert_hits (id),
+    reading_id integer NOT NULL,
+    channel text NOT NULL DEFAULT '铃',
+    result text NOT NULL DEFAULT '已推送',
+    pushed_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_push_logs_pushed_at ON push_logs (pushed_at DESC);
+"""
+
+DEFAULT_SETTING_SQL = """
+INSERT INTO subscription_settings (id, enabled)
+VALUES (1, false)
+ON CONFLICT (id) DO NOTHING
 """
 
 
@@ -32,6 +69,7 @@ def connect_sync():
 
 def ensure_schema_sync(conn) -> None:
     conn.execute(SCHEMA_SQL)
+    conn.execute(DEFAULT_SETTING_SQL)
 
 
 async def create_pool() -> asyncpg.Pool:
@@ -41,6 +79,7 @@ async def create_pool() -> asyncpg.Pool:
 async def ensure_schema_async(pool: asyncpg.Pool) -> None:
     async with pool.acquire() as conn:
         await conn.execute(SCHEMA_SQL)
+        await conn.execute(DEFAULT_SETTING_SQL)
 
 
 async def seed_if_empty(pool: asyncpg.Pool) -> None:
